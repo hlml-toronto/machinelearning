@@ -1,5 +1,5 @@
 # Humans Learning Machine Learning 
-Discussion group takes place in MP505 Fridays 11:00am.
+Discussion group takes place on Discord, Fridays 1:00pm.
 
 Group repo for collaborative ML projects:
 [Tutorials for different techniques](guides/)
