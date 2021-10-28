@@ -1,4 +1,6 @@
 from scipy import misc
+from scipy import ndimage as ndi
+
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
@@ -6,8 +8,10 @@ import matplotlib as mpl
 import random
 import math
 import sys
-
+import cv2
 import imageio
+
+from skimage import segmentation
 from skimage import data, color
 from skimage.transform import hough_circle
 from skimage.feature import peak_local_max, canny
@@ -99,7 +103,6 @@ class OtsuSegment:
 
 	def return_otsu(self):
 		return self.image > self.val
-		
 
 class CircleMask:
 	
@@ -121,10 +124,18 @@ class CircleMask:
 
 if __name__ == '__main__':
 
-	image = imageio.imread(sys.argv[1])
-	#image = img_as_ubyte(img)
+	an_image = imageio.imread(sys.argv[1])
+	print(an_image.shape)
+	rgb_weights = [0.2989, 0.5870, 0.1140]
 
-	#greyscale_im = GreyScaleConverter(image).return_greyscale(False)
+	image = np.dot(an_image[..., :3], rgb_weights).astype(int)
+	print(image[0][0:10])
+	#image = img_as_ubyte(img)
+	print(image.shape)
+
+	plt.imshow(image, cmap=plt.cm.gray)
+	plt.show()
+
 	#print "finished greyscale"
 	#print hough.return_accums()
 	
@@ -172,14 +183,19 @@ if __name__ == '__main__':
 
 	#labeling segmented region
 	labels, numlabels = measure.label(otsu.return_otsu(), background = 0, return_num = True)
-	
+
 	#count sizes of each from flattened array
 	initial_sizes = np.bincount(labels.ravel())
 	initial_sizes[0] = 0
 
 	#setting foreground regions < size(50) to background
-	small_sizes = initial_sizes < 10
+	small_sizes = initial_sizes < 50
 	small_sizes[0] = 0
+
+	print(initial_sizes)
+	print(small_sizes)
+
+	print(small_sizes[labels])
 
 	#get rid of large foreground objects
 	large_sizes = initial_sizes >10000
@@ -200,6 +216,7 @@ if __name__ == '__main__':
 	#apply circle mask to labels grid
 	circle_mask = CircleMask(labels, parameters, 100)
 	labels_mask = circle_mask.return_mask()
+
 	mask_sizes = np.bincount(labels_mask.ravel())
 	mask_sizes[0] = 0
 
@@ -226,6 +243,84 @@ if __name__ == '__main__':
 	hough_sizes = np.bincount(labels_mask.ravel())
 	hough_sizes[0] = 0
 
+	#add watershed
+	re_binarized = labels_mask > 0
+	labels_mask_rebinarized = labels_mask.copy()
+	labels_mask_rebinarized[re_binarized] = 1
+
+	dist_transform = cv2.distanceTransform(labels_mask_rebinarized.astype(np.uint8), cv2.DIST_L2, 3)
+	local_max_boolean = peak_local_max(dist_transform, min_distance=2, indices=False)
+	markers, _ = ndi.label(local_max_boolean)
+	segmented_watershed = segmentation.watershed(255 - dist_transform, markers, mask=labels_mask_rebinarized)
+
+	props_otsu = measure.regionprops(labels_mask, image)
+	props_watershed = measure.regionprops(segmented_watershed, image)
+
+	#iterate through watershed boxes, eliminahough_img_overlayting those that perfectly overlap (indicating that identical distance pixel values exist), or reassigning
+	bboxes_watershed = []
+	label_watershed = []
+
+	fractional_overlaps = []
+	label_overlaps = []
+	target_overlap = []
+
+	for i in range(len(props_watershed)):
+		bboxes_watershed.append(props_watershed[i].bbox)
+		label_watershed.append(props_watershed[i].label)
+
+	for i, b1 in enumerate(bboxes_watershed):
+		minr_1, minc_1, maxr_1, maxc_1 = b1
+		fractional_area_intersections = []
+		label_intersections = []
+		target_overlap.append(label_watershed[i])
+		for j, b2 in enumerate(bboxes_watershed):
+			minr_2, minc_2, maxr_2, maxc_2 = b2
+
+			if i!=j:
+				isOverlapped = (minc_1 <= maxc_2 and minc_2 <= maxc_1 and minr_1 <= maxr_2 and minr_2 <= maxr_1)
+
+				#compute area of intersection and remove bbox if contained within another
+				if isOverlapped:
+					left = max(minc_1,minc_2)
+					right = min(maxc_1, maxc_2)
+					top = min(maxr_1,maxr_2)
+					bottom = max(minr_1, minr_2)
+
+					intersect_area = abs(left-right) * abs(top-bottom)
+
+					b1_area = abs(maxr_1 - minr_1) * abs(maxc_1 - minc_1)
+					fractional_area_intersections.append(intersect_area/float(b1_area))
+					label_intersections.append(label_watershed[j])
+
+		fractional_overlaps.append(fractional_area_intersections)
+		label_overlaps.append(label_intersections)
+
+	#if a bounding box is completely overlapped, change it's label values
+	for i, target_label in enumerate(target_overlap):
+		print(sum(fractional_overlaps[i]))
+		if sum(fractional_overlaps[i])>=1:
+			label_to_assign = label_overlaps[i][np.argmin(np.array(fractional_overlaps[i]))]
+
+			raveled = np.ravel(segmented_watershed)
+			arg_array = np.arange(max(raveled)+1)
+			bool_array = arg_array == target_label
+
+			segmented_watershed[bool_array[segmented_watershed]]=label_to_assign
+
+	props_watershed_culled = measure.regionprops(segmented_watershed, image)
+	bboxes_watershed_culled = []
+
+	for i in range(len(props_watershed_culled)):
+		bboxes_watershed_culled.append(props_watershed_culled[i].bbox)
+
+	# plot bounding boxes colour coded green as grande, red as petite
+	for b in bboxes_watershed_culled:
+
+		minr, minc, maxr, maxc = b
+		bx = (minc, maxc, maxc, minc, minc)
+		by = (minr, minr, maxr, maxr, minr)
+		plt.plot(bx, by, '-g', linewidth=2.5)
+
 	print(str(np.count_nonzero(hough_sizes)) + " after hough mask elimination. \n")
 
 	plt.imshow(labels_mask, cmap=plt.cm.gray)
@@ -240,96 +335,52 @@ if __name__ == '__main__':
 	#getting intensities of petites in small range using mask_sizes
 
 	irregular_labels = []
-	props = measure.regionprops(labels_mask, image)
-	intensities = []
+	props = measure.regionprops(segmented_watershed, image)
 
 	#add another layer of shape processing, removing irregular shapes
 	for i in range(len(props)):
 		eccentricity = props[i].eccentricity
+		size = props[i].area
 		#if too irregular, record labels with this irregularity
-		if eccentricity < 0.6:
-			irregular_labels.append(np.nonzero(hough_sizes)[0][i])
+		if eccentricity > 0.9:
+			irregular_labels.append(props[i].label)
 
-	#remove labels that are irregular (perimeter over square root area)
-	for row in range(len(labels_mask)):
-		for col in range(len(labels_mask[0])):
-			if labels_mask[row][col] in irregular_labels:
-				labels_mask[row][col] = 0
+	print(irregular_labels)
 
-	props = measure.regionprops(labels_mask, image)
+	for row in range(len(segmented_watershed)):
+		for col in range(len(segmented_watershed[0])):
+			if segmented_watershed[row][col] in irregular_labels:
+				segmented_watershed[row][col] = 0
 
-	for i in range(len(props)):
-		intensities.append((props[i].area, props[i].mean_intensity))
+	# count sizes of each from flattened array
+	initial_sizes = np.bincount(segmented_watershed.ravel())
+	initial_sizes[0] = 0
 
-	print("Identified " + str(len(props)) + " potential colonies after culling irregular shapes.")
+	# setting foreground regions < size(50) to background
+	small_sizes = initial_sizes < 50
+	small_sizes[0] = 0
 
-	plt.imshow(labels_mask, cmap=plt.cm.gray)
+	# get rid of large foreground objects
+	large_sizes = initial_sizes > 10000
+	large_sizes[0] = 0
+
+	segmented_watershed[small_sizes[segmented_watershed]] = 0
+	segmented_watershed[large_sizes[segmented_watershed]] = 0
+
+	props = measure.regionprops(segmented_watershed, image)
+
+	plt.imshow(segmented_watershed, cmap=plt.cm.gray)
 	plt.show()
 
-	#sort based on size and format for plotting
-	sort_size_intensity = sorted(intensities, key=lambda x: x[0])
-	plot_list = [[elem1, elem2] for elem1, elem2 in sort_size_intensity]
+	formatted_output = []
+	for i in range(len(props)):
+		minr, minc, maxr, maxc = props[i].bbox
 
-	# plt.scatter(*zip(*plot_list))
-	# plt.title('Intensity distribution across labeled regions')
-	# plt.xlabel('Size')
-	# axes = plt.gca()
-	# axes.set_ylim([0,120])
-	# plt.ylabel('Intensity')
-	# plt.show()
+		perline_entry = [minr, minc, maxr, maxc]
+		perline_entry.extend([props[i].area, props[i].mean_intensity])
 
-	np.savetxt(sys.argv[1][:-4] + "size_intensity_data.txt", plot_list)
-	cluster = AgglomerativeClustering(n_clusters=2, affinity='euclidean', linkage='single')
-	cluster.fit_predict(plot_list)
+		print(perline_entry)
+		formatted_output.append(perline_entry)
 
-	c1 = []
-	c2 = []
+	np.savetxt(sys.argv[1][:-4] + "_bbox_size_intensity.txt", formatted_output)
 
-	for i in range(len(cluster.labels_)):
-		if cluster.labels_[i]:
-			c1.append(plot_list[i])
-		else:
-			c2.append(plot_list[i])
-
-	if c1[0][0] > c2[-1][0]:
-		large_count = len(c1)
-		small_count = len(c2)
-		c1_label = 'Grande'
-		c2_label = 'Petite'
-	else:
-		large_count = len(c2)
-		small_count = len(c1)
-		c1_label = 'Petite'
-		c2_label = 'Grande'
-
-	petite_freq = float(small_count) / (large_count + small_count)
-	size = 30
-
-	# plt.scatter(data[:,0],data[:,1], c=cluster.labels_, cmap='rainbow')
-	plt.scatter(*zip(*c1), color='red', label=c1_label, s=30)
-	plt.scatter(*zip(*c2), color='blue', label=c2_label, s=30)
-	plt.title('Single linkage clustering of colonies', fontsize=size)
-	plt.xlabel('Size (pixels)', fontsize=size)
-	plt.ylabel('Intensity (average RGB)', fontsize=size)
-	ax = plt.gca()
-	ax.legend(loc='lower right', scatterpoints=1, prop={'size': size})
-	ax.tick_params(axis='both', which='major', labelsize=size)
-	ax.tick_params(axis='both', which='minor', labelsize=size)
-
-	fig = plt.gcf()
-	fig.set_size_inches(12, 9)
-
-	fig.savefig(str(sys.argv[1][:-4]) + "agglomerative.png")
-
-	#plt.legend(loc='lower right', numpoints=1)
-	#plt.show()
-	#plt.show()
-	filename = 'strain' + str(sys.argv[1][0]) +'_freq.txt'
-
-	with open(filename, 'a') as output:
-		output.write("%s\t%5.5f\t%5.5f\t %5.5f\n" % (sys.argv[1][:-4], petite_freq, small_count, small_count + large_count))
-
-#plt.hist(data, bins=range(min(data), max(data) + binwidth, binwidth))
-	
-		
-	

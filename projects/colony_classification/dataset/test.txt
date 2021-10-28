@@ -1,4 +1,0 @@
-MP3_1_gray_3_colour
-CP1_1_gray_1_colour
-10T3_1_colour_1_colour
-CP5_2_gray_5_colour

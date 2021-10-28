@@ -1,4 +1,0 @@
-MP3_1_gray_5_colour
-MP3_1_gray_2_colour
-MP3_1_gray_6_colour
-MP3_2_colour_6a_colour
