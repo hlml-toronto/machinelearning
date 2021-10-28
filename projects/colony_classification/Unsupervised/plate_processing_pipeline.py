@@ -382,5 +382,5 @@ if __name__ == '__main__':
 		print(perline_entry)
 		formatted_output.append(perline_entry)
 
-	np.savetxt(sys.argv[1][:-4] + "_bbox_size_intensity.txt", formatted_output)
+	np.savetxt(sys.argv[1][:-4] + "-bbox_size_intensity.txt", formatted_output)
 
